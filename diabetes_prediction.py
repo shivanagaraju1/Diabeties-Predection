@@ -5,33 +5,52 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split, GridSearchCV, learning_curve
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc, precision_recall_curve
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from imblearn.over_sampling import SMOTE   # install with: pip install imbalanced-learn
+from imblearn.over_sampling import SMOTE
 
 # -------------------------------
-# Load Dataset Safely
+# Load Dataset
 # -------------------------------
 dataset_path = "diabetes.csv"
 if not os.path.exists(dataset_path):
     raise FileNotFoundError("Dataset not found. Place 'diabetes.csv' in the same folder as this script.")
 
-diabetes_dataset = pd.read_csv(dataset_path)
+df = pd.read_csv(dataset_path)
 
 # -------------------------------
-# Data Cleaning (replace zeros with median values)
+# Data Cleaning
 # -------------------------------
 cols_with_zero = ["Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI"]
 for col in cols_with_zero:
-    diabetes_dataset[col] = diabetes_dataset[col].replace(0, np.nan)
-    diabetes_dataset[col].fillna(diabetes_dataset[col].median(), inplace=True)
+    df[col] = df[col].replace(0, np.nan)
+    df[col].fillna(df[col].median(), inplace=True)
 
-X = diabetes_dataset.drop(columns='Outcome', axis=1)
-Y = diabetes_dataset['Outcome']
+# -------------------------------
+# Add Synthetic Features
+# -------------------------------
+np.random.seed(42)
+df["HbA1c"] = np.random.uniform(4.5, 12.0, size=len(df))
+df["Cholesterol"] = np.random.uniform(150, 280, size=len(df))
+df["FamilyHistory"] = np.random.choice([0,1], size=len(df), p=[0.6,0.4])
+df["PhysicalActivity"] = np.random.randint(0, 10, size=len(df))
+df["DietQuality"] = np.random.randint(1, 11, size=len(df))
+df["SmokingStatus"] = np.random.choice([0,1], size=len(df), p=[0.7,0.3])
+df["Glucose_Age_Ratio"] = df["Glucose"] / df["Age"]
+
+# One-hot encodings
+df["BMI_Category"] = pd.cut(df["BMI"], bins=[0,18.5,25,30,100],
+                            labels=["Underweight","Normal","Overweight","Obese"])
+df["Age_Group"] = pd.cut(df["Age"], bins=[20,30,40,50,60,100],
+                         labels=["20s","30s","40s","50s","60+"])
+df = pd.get_dummies(df, columns=["BMI_Category","Age_Group"])  # keep all dummies
+
+X = df.drop(columns='Outcome')
+Y = df['Outcome']
 
 # -------------------------------
 # Standardization
@@ -57,7 +76,7 @@ X_train, Y_train = smote.fit_resample(X_train, Y_train)
 # -------------------------------
 models = {
     "Logistic Regression": LogisticRegression(max_iter=1000),
-    "SVM (Linear Kernel)": SVC(kernel='linear'),
+    "SVM (Linear Kernel)": SVC(kernel='linear', probability=True),
     "Random Forest": RandomForestClassifier(random_state=42),
     "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     "KNN": KNeighborsClassifier(n_neighbors=7)
@@ -96,74 +115,126 @@ for name, model in models.items():
     print("-"*50)
 
 # -------------------------------
-# Line Chart Comparison
+# Show Plots All At Once
 # -------------------------------
-plt.figure(figsize=(10,6))
+plt.figure(figsize=(8,6))
 plt.plot(list(results.keys()), list(results.values()), marker='o', linestyle='-', color='blue')
-plt.title("Model Accuracy Comparison (Line Chart)")
+plt.title("Model Accuracy Comparison")
 plt.ylabel("Accuracy")
 plt.xticks(rotation=30)
 plt.grid(True)
-plt.show()
 
-# -------------------------------
-# Confusion Matrix Heatmaps
-# -------------------------------
-fig, axes = plt.subplots(2, 3, figsize=(15,10))
-axes = axes.flatten()
+for name, cm in conf_matrices.items():
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+    plt.title(f"{name} Confusion Matrix")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
 
-for idx, (name, cm) in enumerate(conf_matrices.items()):
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[idx])
-    axes[idx].set_title(name)
-    axes[idx].set_xlabel("Predicted")
-    axes[idx].set_ylabel("Actual")
-
-plt.tight_layout()
-plt.show()
-
-# -------------------------------
-# Feature Importance (Random Forest Tuned)
-# -------------------------------
+plt.figure(figsize=(8,6))
 importances = best_rf.feature_importances_
-feature_names = diabetes_dataset.drop(columns='Outcome').columns
-
-plt.figure(figsize=(10,6))
+feature_names = df.drop(columns='Outcome').columns
 sns.barplot(x=importances, y=feature_names, palette="viridis")
 plt.title("Feature Importance (Random Forest Tuned)")
-plt.show()
+
+plt.figure(figsize=(8,6))
+for name, model in models.items():
+    if hasattr(model, "predict_proba"):
+        y_prob = model.predict_proba(X_test)[:,1]
+        fpr, tpr, _ = roc_curve(Y_test, y_prob)
+        roc_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, label=f"{name} (AUC={roc_auc:.2f})")
+plt.plot([0,1],[0,1],'k--')
+plt.title("ROC Curves")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.legend()
+
+plt.figure(figsize=(8,6))
+for name, model in models.items():
+    if hasattr(model, "predict_proba"):
+        y_prob = model.predict_proba(X_test)[:,1]
+        precision, recall, _ = precision_recall_curve(Y_test, y_prob)
+        plt.plot(recall, precision, label=name)
+plt.title("Precision-Recall Curves")
+plt.xlabel("Recall")
+plt.ylabel("Precision")
+plt.legend()
+
+train_sizes, train_scores, test_scores = learning_curve(best_rf, X, Y, cv=5, n_jobs=-1)
+train_mean = np.mean(train_scores, axis=1)
+test_mean = np.mean(test_scores, axis=1)
+plt.figure(figsize=(8,6))
+plt.plot(train_sizes, train_mean, 'o-', label="Training Score")
+plt.plot(train_sizes, test_mean, 'o-', label="Validation Score")
+plt.title("Learning Curve (Best Model)")
+plt.xlabel("Training Examples")
+plt.ylabel("Score")
+plt.legend()
+
+plt.figure(figsize=(10,8))
+sns.heatmap(df.corr(), annot=True, cmap="coolwarm")
+plt.title("Feature Correlation Heatmap")
+
+plt.show(block=False)
 
 # -------------------------------
 # Best Model Selection
 # -------------------------------
 best_model_name = max(results, key=results.get)
 print(f"Best Model: {best_model_name} with accuracy {results[best_model_name]:.4f}")
-
 best_model = models[best_model_name]
 
 # -------------------------------
-# Example Prediction
+# Dynamic Helper for Prediction
 # -------------------------------
 def build_input(preg, glucose, bp, skin, insulin, bmi, dpf, age):
-    # Derived features
-    hba1c = 7.0
-    cholesterol = 190
-    family_history = 1
-    physical_activity = 3
-    diet_quality = 6
-    smoking_status = 0
-    glucose_age_ratio = glucose / age
-    
-    # One-hot placeholders (BMI_Category, Age_Group)
-    bmi_cat = [0,0,0]   # adjust based on BMI
-    age_group = [0,0,0,0]  # adjust based on Age
-    
-    return np.array([preg, glucose, bp, skin, insulin, bmi, dpf, age,
-                     hba1c, cholesterol, family_history, physical_activity,
-                     diet_quality, smoking_status,
-                     *bmi_cat, *age_group,
-                     glucose_age_ratio]).reshape(1, -1)
+    # Start with a dict of values for the original + synthetic features
+    input_dict = {
+        "Pregnancies": preg,
+        "Glucose": glucose,
+        "BloodPressure": bp,
+        "SkinThickness": skin,
+        "Insulin": insulin,
+        "BMI": bmi,
+        "DiabetesPedigreeFunction": dpf,
+        "Age": age,
+        "HbA1c": 7.0,
+        "Cholesterol": 190,
+        "FamilyHistory": 1,
+        "PhysicalActivity": 3,
+        "DietQuality": 6,
+        "SmokingStatus": 0,
+        "Glucose_Age_Ratio": glucose/age
+    }
 
-# Example usage
-input_data = build_input(5,166,72,19,175,25.8,0.587,51)
+    # Add dummy columns with 0 for any one-hot features
+    for col in df.drop(columns="Outcome").columns:
+        if col not in input_dict:
+            input_dict[col] = 0
+
+    # Ensure correct order
+    ordered_values = [input_dict[col] for col in df.drop(columns="Outcome").columns]
+    return np.array(ordered_values).reshape(1, -1)
+
+# -------------------------------
+# Interactive Prediction
+# -------------------------------
+print("\nEnter patient details:")
+preg = int(input("Pregnancies: "))
+glucose = float(input("Glucose: "))
+bp = float(input("Blood Pressure: "))
+skin = float(input("Skin Thickness: "))
+insulin = float(input("Insulin: "))
+bmi = float(input("BMI: "))
+dpf = float(input("Diabetes Pedigree Function: "))
+age = int(input("Age: "))
+
+# Build full input vector
+input_data = build_input(preg, glucose, bp, skin, insulin, bmi, dpf, age)
+
+# Scale and predict
 std_data = scaler.transform(input_data)
 prediction = best_model.predict(std_data)
+
+print("\nPrediction:", "Diabetic" if prediction[0] == 1 else "Not Diabetic")
