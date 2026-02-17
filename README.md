@@ -1,0 +1,1 @@
+Machine learning project for diabetes prediction using the PIMA Diabetes Dataset. Includes data preprocessing, feature scaling, train‑test split, and training a Support Vector Machine (SVM) classifier. Evaluates accuracy on training/test sets and provides a simple predictive system for new inputs.
